@@ -314,8 +314,13 @@ static void emit_subdirs_recursive(int fd, const char *fsroot,
 
 static void emit_related_for_dir(int fd, const char *fsroot,
                                  const char *rel_dir) {
-  send(fd, "<h2>Articoli correlati</h2>\n",
-       strlen("<h2>Articoli correlati</h2>\n"), 0);
+  if (strcmp(rel_dir, "/")) {
+    send(fd, "<h2>Articoli</h2>\n",
+         strlen("<h2>Articoli</h2>\n"), 0);
+  } else {
+    send(fd, "<h2>Articoli correlati</h2>\n",
+         strlen("<h2>Articoli correlati</h2>\n"), 0);
+  }
 
   if (strcmp(rel_dir, "/") == 0) {
     emit_subdirs_recursive(fd, fsroot, "/", 8);
@@ -374,7 +379,8 @@ static void serve_markdown_page(int fd, const char *fsroot, const char *rel_dir,
   }
 
   if (stream_parser_output(fd, full, parser_argv) != 0) {
-    const char *msg = "<p>Errore: il parser markdown sembra avere problemi.</p>\n";
+    const char *msg =
+        "<p>Errore: il parser markdown sembra avere problemi.</p>\n";
     send(fd, msg, strlen(msg), 0);
   }
 
