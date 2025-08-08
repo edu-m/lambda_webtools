@@ -16,9 +16,13 @@ Its main features are:
 It reads Markdown from stdin and writes HTML to stdout.
 Its main features are:
 
-- Converts headings (#, ##, …) to <h1>...</h1>, <h2>...</h2> etc.
+- Converts headings (#, ##, …) to <\h1>...<\/h1>, <\h2>...<\/h2> etc.
 - Supports bold (**text**) and italic (*text*)
-- Converts \[link text\](url) to <a href="url">link text</a>
+- Converts \[link text\](url) to <\a href="url">link text<\/a>
 - Allows literal [ ] ( ) * in text by escaping them with a backslash like you'd normally do
 - Escapes HTML special characters (&, <, >, ") so it doesn't accidentally break the text
-- Leaves unsupported Markdown syntax untouched, wrapped in <p>
+- Leaves unsupported Markdown syntax untouched, wrapped in <\p>
+
+# Copyright notice
+
+This software is distributed under the GNU GPL 3.0 license. Refer to LICENSE or visit http://www.gnu.org/licenses/ for more information. You are more than welcome to fork, modify or distribute this software.
