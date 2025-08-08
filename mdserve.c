@@ -314,7 +314,7 @@ static void emit_subdirs_recursive(int fd, const char *fsroot,
 
 static void emit_related_for_dir(int fd, const char *fsroot,
                                  const char *rel_dir) {
-  if (strcmp(rel_dir, "/")) {
+  if (strcmp(rel_dir, "/") == 0) {
     send(fd, "<h2>Articoli</h2>\n",
          strlen("<h2>Articoli</h2>\n"), 0);
   } else {
