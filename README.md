@@ -1,6 +1,6 @@
 # lambda_webtools
 
-Tools for my blog.
+Tools for my blog https://lambdawiki.duckdns.org/.
 
 **mdserve** is a small UNIX-style HTTP server that serves Markdown files as HTML, using an external parser.
 It supports clean URLs, automatic index rendering, and related articles navigation.
