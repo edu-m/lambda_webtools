@@ -46,6 +46,15 @@ static void send_header(int fd, int code, const char *status, const char *ctype,
   send(fd, header, n, 0);
 }
 
+static void send_html_head(int fd) {
+  char header[BUFFER_SIZE];
+  int n = snprintf(header, sizeof(header),
+                   "<!DOCTYPE html>\r\n"
+                   "<head>\r\n<meta charset=\"utf-8\"/>\r\n"
+                   "</head>\r\n");
+  send(fd, header, n, 0);
+}
+
 static void url_decode(const char *src, char *dest, size_t dsz) {
   size_t i = 0, j = 0;
   while (src[i] && j + 1 < dsz) {
@@ -315,8 +324,7 @@ static void emit_subdirs_recursive(int fd, const char *fsroot,
 static void emit_related_for_dir(int fd, const char *fsroot,
                                  const char *rel_dir) {
   if (strcmp(rel_dir, "/") == 0) {
-    send(fd, "<h2>Articoli</h2>\n",
-         strlen("<h2>Articoli</h2>\n"), 0);
+    send(fd, "<h2>Articoli</h2>\n", strlen("<h2>Articoli</h2>\n"), 0);
   } else {
     send(fd, "<h2>Articoli correlati</h2>\n",
          strlen("<h2>Articoli correlati</h2>\n"), 0);
@@ -371,6 +379,7 @@ static void serve_markdown_page(int fd, const char *fsroot, const char *rel_dir,
   }
 
   send_header(fd, 200, "OK", "text/html", -1);
+  send_html_head(fd);
   send(fd, "<html><body>", strlen("<html><body>"), 0);
 
   if (strcmp(rel_dir, "/") != 0) {
