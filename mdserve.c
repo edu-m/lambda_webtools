@@ -154,15 +154,145 @@ static int path_join(char *dst, size_t dstsz, const char *a, const char *b,
   return (int)pos;
 }
 
-static void send_redirect(int fd, const char *location) {
+static int path_is_within_root(const char *path, const char *root) {
+  if (!path || !root)
+    return 0;
+  size_t rootlen = strlen(root);
+  if (rootlen == 0)
+    return 0;
+  if (rootlen == 1 && root[0] == '/')
+    return 1;
+  if (root[rootlen - 1] == '/')
+    return strncmp(path, root, rootlen) == 0;
+  if (strncmp(path, root, rootlen) != 0)
+    return 0;
+  return path[rootlen] == '\0' || path[rootlen] == '/';
+}
+
+static void send_redirect_code(int fd, int code, const char *reason,
+                               const char *location) {
   char hdr[BUFFER_SIZE];
   int n = snprintf(hdr, sizeof(hdr),
-                   "HTTP/1.1 301 Moved Permanently\r\n"
+                   "HTTP/1.1 %d %s\r\n"
                    "Location: %s\r\n"
                    "Content-Length: 0\r\n"
                    "Connection: close\r\n\r\n",
-                   location);
+                   code, reason, location);
   send(fd, hdr, n, 0);
+}
+
+static void send_redirect(int fd, const char *location) {
+  send_redirect_code(fd, 301, "Moved Permanently", location);
+}
+
+static int parse_date_ymd(const char *s, char y[5], char m[3], char d[3]) {
+  if (!s)
+    return 0;
+  if (strlen(s) != 10)
+    return 0;
+  if (!isdigit((unsigned char)s[0]) || !isdigit((unsigned char)s[1]) ||
+      !isdigit((unsigned char)s[2]) || !isdigit((unsigned char)s[3]) ||
+      s[4] != '-' || !isdigit((unsigned char)s[5]) ||
+      !isdigit((unsigned char)s[6]) || s[7] != '-' ||
+      !isdigit((unsigned char)s[8]) || !isdigit((unsigned char)s[9]))
+    return 0;
+
+  memcpy(y, s + 0, 4);
+  y[4] = '\0';
+  memcpy(m, s + 5, 2);
+  m[2] = '\0';
+  memcpy(d, s + 8, 2);
+  d[2] = '\0';
+  return 1;
+}
+
+static int query_get_param(const char *qs, const char *key, char *out,
+                           size_t outsz) {
+  if (!qs || !key || !out || outsz == 0)
+    return 0;
+
+  size_t klen = strlen(key);
+  const char *p = qs;
+
+  while (*p) {
+    const char *amp = strchr(p, '&');
+    size_t seglen = amp ? (size_t)(amp - p) : strlen(p);
+
+    const char *eq = memchr(p, '=', seglen);
+    if (eq) {
+      size_t name_len = (size_t)(eq - p);
+      if (name_len == klen && strncmp(p, key, klen) == 0) {
+        size_t vlen = seglen - name_len - 1;
+        if (vlen >= outsz)
+          vlen = outsz - 1;
+        memcpy(out, eq + 1, vlen);
+        out[vlen] = '\0';
+        return 1;
+      }
+    }
+
+    if (!amp)
+      break;
+    p = amp + 1;
+  }
+  return 0;
+}
+
+static void split_path_query(const char *in, char *path_out, size_t path_sz,
+                             char *query_out, size_t query_sz) {
+  if (query_out && query_sz)
+    query_out[0] = '\0';
+  if (!in) {
+    if (path_out && path_sz)
+      safe_copy(path_out, path_sz, "/");
+    return;
+  }
+
+  const char *q = strchr(in, '?');
+  if (!q) {
+    safe_copy(path_out, path_sz, in);
+    return;
+  }
+
+  size_t plen = (size_t)(q - in);
+  if (plen >= path_sz)
+    plen = path_sz - 1;
+  memcpy(path_out, in, plen);
+  path_out[plen] = '\0';
+
+  if (query_out && query_sz)
+    safe_copy(query_out, query_sz, q + 1);
+}
+
+static void maybe_handle_go_redirect(int fd, const char *path_only,
+                                     const char *query_only) {
+  if (strcmp(path_only, "/go") != 0)
+    return;
+
+  char dval[64];
+  if (!query_get_param(query_only, "d", dval, sizeof(dval))) {
+    send_header(fd, 400, "Bad Request", "text/plain", -1);
+    send(fd, "missing d\n", 10, 0);
+    close(fd);
+    _exit(0);
+  }
+
+  char yyyy[5], mm[3], dd[3];
+  if (!parse_date_ymd(dval, yyyy, mm, dd)) {
+    send_header(fd, 400, "Bad Request", "text/plain", -1);
+    send(fd, "invalid d (expected YYYY-MM-DD)\n", 32, 0);
+    close(fd);
+    _exit(0);
+  }
+
+  char loc[BUFFER_SIZE];
+  snprintf(loc, sizeof(loc),
+           "https://archivio.unita.news/assets/derived/%s/%s/%s/issue_full.pdf",
+           yyyy, mm, dd);
+
+  send_redirect(fd, loc);
+  close(fd);
+  _exit(0);
 }
 
 static int pick_page(const char *dirpath, char chosen[BUFFER_SIZE],
@@ -524,8 +654,8 @@ static void handle_client(int fd, const char *fsroot,
   }
   buf[r] = 0;
 
-  char method[16], path[BUFFER_SIZE];
-  if (sscanf(buf, "%15s %16383s", method, path) != 2) {
+  char method[16], raw_target[BUFFER_SIZE];
+  if (sscanf(buf, "%15s %16383s", method, raw_target) != 2) {
     close(fd);
     return;
   }
@@ -535,8 +665,15 @@ static void handle_client(int fd, const char *fsroot,
     return;
   }
 
-  char decoded[BUFFER_SIZE];
-  url_decode(path, decoded, sizeof(decoded)); // starts with '/'
+  char decoded_target[BUFFER_SIZE];
+  url_decode(raw_target, decoded_target, sizeof(decoded_target));
+
+  char decoded_path[BUFFER_SIZE];
+  char decoded_query[BUFFER_SIZE];
+  split_path_query(decoded_target, decoded_path, sizeof(decoded_path),
+                   decoded_query, sizeof(decoded_query));
+
+  maybe_handle_go_redirect(fd, decoded_path, decoded_query);
 
   char rootcanon[BUFFER_SIZE];
   if (!realpath(fsroot, rootcanon)) {
@@ -546,7 +683,7 @@ static void handle_client(int fd, const char *fsroot,
   }
 
   char joined[BUFFER_SIZE];
-  if (safe_join(joined, sizeof(joined), rootcanon, decoded) < 0) {
+  if (safe_join(joined, sizeof(joined), rootcanon, decoded_path) < 0) {
     send_header(fd, 414, "URI Too Long", "text/plain", -1);
     send(fd, "path too long\n", 14, 0);
     close(fd);
@@ -555,7 +692,7 @@ static void handle_client(int fd, const char *fsroot,
 
   char canon[BUFFER_SIZE];
   if (!realpath(joined, canon) ||
-      strncmp(canon, rootcanon, strlen(rootcanon)) != 0) {
+      !path_is_within_root(canon, rootcanon)) {
     send_header(fd, 403, "Forbidden", "text/plain", -1);
     close(fd);
     return;
@@ -564,9 +701,9 @@ static void handle_client(int fd, const char *fsroot,
   struct stat st;
   if (stat(canon, &st) == 0) {
     if (S_ISDIR(st.st_mode)) {
-      if (!ends_with_slash(decoded)) {
+      if (!ends_with_slash(decoded_path)) {
         char want[BUFFER_SIZE];
-        if (safe_copy(want, sizeof(want), decoded) < 0) {
+        if (safe_copy(want, sizeof(want), decoded_path) < 0) {
           close(fd);
           return;
         }
@@ -599,6 +736,7 @@ static void handle_client(int fd, const char *fsroot,
           safe_copy(rel_file, sizeof(rel_file), rf2);
         else
           safe_copy(rel_file, sizeof(rel_file), "/");
+
         if (is_markdown) {
           serve_markdown_page(fd, rootcanon, rel_dir, rel_file, parser_argv);
         } else {
@@ -607,7 +745,6 @@ static void handle_client(int fd, const char *fsroot,
       } else {
         serve_directory_listing(fd, rootcanon, rel_dir);
       }
-
     } else {
       const char *rf = canon + strlen(rootcanon);
       char relfile[BUFFER_SIZE];
