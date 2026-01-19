@@ -165,34 +165,61 @@ static void send_redirect(int fd, const char *location) {
   send(fd, hdr, n, 0);
 }
 
-static int pick_markdown(const char *dirpath, char chosen[BUFFER_SIZE]) {
+static int pick_page(const char *dirpath, char chosen[BUFFER_SIZE],
+                     bool *is_markdown) {
   DIR *d = opendir(dirpath);
   if (!d)
     return 0;
   struct dirent *ent;
-  char first[BUFFER_SIZE] = {0};
+  char first_md[BUFFER_SIZE] = {0};
+  char first_html[BUFFER_SIZE] = {0};
+  bool has_index_md = false;
+  bool has_index_html = false;
   while ((ent = readdir(d))) {
     if (ent->d_name[0] == '.')
       continue;
     const char *dot = strrchr(ent->d_name, '.');
-    if (!dot || strcmp(dot, ".md") != 0)
+    if (!dot)
       continue;
-    if (strcmp(ent->d_name, "index.md") == 0) {
-      if (path_join(chosen, BUFFER_SIZE, dirpath, "index.md", false) < 0) {
-        closedir(d);
-        return 0;
+    if (strcmp(dot, ".md") == 0) {
+      if (strcmp(ent->d_name, "index.md") == 0) {
+        has_index_md = true;
+        continue;
       }
-      closedir(d);
-      return 1;
-    }
-    if (!first[0] || strcmp(ent->d_name, first) < 0) {
-      safe_copy(first, sizeof(first), ent->d_name);
+      if (!first_md[0] || strcmp(ent->d_name, first_md) < 0) {
+        safe_copy(first_md, sizeof(first_md), ent->d_name);
+      }
+    } else if (strcmp(dot, ".html") == 0) {
+      if (strcmp(ent->d_name, "index.html") == 0) {
+        has_index_html = true;
+        continue;
+      }
+      if (!first_html[0] || strcmp(ent->d_name, first_html) < 0) {
+        safe_copy(first_html, sizeof(first_html), ent->d_name);
+      }
     }
   }
   closedir(d);
-  if (first[0]) {
-    if (path_join(chosen, BUFFER_SIZE, dirpath, first, false) < 0)
+  const char *pick = NULL;
+  bool pick_md = false;
+  if (has_index_md) {
+    pick = "index.md";
+    pick_md = true;
+  } else if (has_index_html) {
+    pick = "index.html";
+    pick_md = false;
+  } else if (first_md[0]) {
+    pick = first_md;
+    pick_md = true;
+  } else if (first_html[0]) {
+    pick = first_html;
+    pick_md = false;
+  }
+  if (pick) {
+    if (path_join(chosen, BUFFER_SIZE, dirpath, pick, false) < 0)
       return 0;
+    if (is_markdown)
+      *is_markdown = pick_md;
     return 1;
   }
   return 0;
@@ -430,7 +457,7 @@ static void serve_directory_listing(int fd, const char *fsroot,
       struct stat st;
       if (stat(fp, &st) == 0 && !S_ISDIR(st.st_mode)) {
         const char *dot = strrchr(ent->d_name, '.');
-        if (dot && strcmp(dot, ".md") == 0) {
+        if (dot && (strcmp(dot, ".md") == 0 || strcmp(dot, ".html") == 0)) {
           char href[BUFFER_SIZE];
           if (path_join(href, sizeof(href), rel, ent->d_name, false) < 0)
             continue;
@@ -450,7 +477,8 @@ static void serve_directory_listing(int fd, const char *fsroot,
        0);
 }
 
-static void serve_file_raw(int fd, const char *fsroot, const char *rel) {
+static void serve_file_raw(int fd, const char *fsroot, const char *rel,
+                           const char *ctype) {
   char full[BUFFER_SIZE];
   if (safe_join(full, sizeof(full), fsroot, rel) < 0) {
     send_header(fd, 500, "Internal Server Error", "text/plain", -1);
@@ -467,7 +495,7 @@ static void serve_file_raw(int fd, const char *fsroot, const char *rel) {
   }
   struct stat st;
   fstat(f, &st);
-  send_header(fd, 200, "OK", "application/octet-stream", st.st_size);
+  send_header(fd, 200, "OK", ctype, st.st_size);
   off_t off = 0;
   sendfile(fd, f, &off, st.st_size);
   close(f);
@@ -562,15 +590,20 @@ static void handle_client(int fd, const char *fsroot,
         ensure_trailing_slash(rel_dir, sizeof(rel_dir));
       }
 
-      char mdpath[BUFFER_SIZE];
-      if (pick_markdown(canon, mdpath)) {
-        const char *rf2 = mdpath + strlen(rootcanon);
+      char pagepath[BUFFER_SIZE];
+      bool is_markdown = false;
+      if (pick_page(canon, pagepath, &is_markdown)) {
+        const char *rf2 = pagepath + strlen(rootcanon);
         char rel_file[BUFFER_SIZE];
         if (*rf2 == '/')
           safe_copy(rel_file, sizeof(rel_file), rf2);
         else
           safe_copy(rel_file, sizeof(rel_file), "/");
-        serve_markdown_page(fd, rootcanon, rel_dir, rel_file, parser_argv);
+        if (is_markdown) {
+          serve_markdown_page(fd, rootcanon, rel_dir, rel_file, parser_argv);
+        } else {
+          serve_file_raw(fd, rootcanon, rel_file, "text/html");
+        }
       } else {
         serve_directory_listing(fd, rootcanon, rel_dir);
       }
@@ -588,8 +621,10 @@ static void handle_client(int fd, const char *fsroot,
         char rel_dir[BUFFER_SIZE];
         dirname_rel(relfile, rel_dir);
         serve_markdown_page(fd, rootcanon, rel_dir, relfile, parser_argv);
+      } else if (dot && strcmp(dot, ".html") == 0) {
+        serve_file_raw(fd, rootcanon, relfile, "text/html");
       } else {
-        serve_file_raw(fd, rootcanon, relfile);
+        serve_file_raw(fd, rootcanon, relfile, "application/octet-stream");
       }
     }
   } else {
